@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF-to-LaTeX Converter</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+    <h1>PDF-to-LaTeX</h1>
+    <div class="status-bar">
+        <span><span id="status-dot" class="status-dot loading"></span> <span id="status-text">Checking...</span></span>
+    </div>
+</header>
+
+<!-- Toast Container -->
+<div id="toast-container" class="toast-container"></div>
+
+<!-- Main Content -->
+<div class="main-container">
+
+    <!-- Left Panel: Upload & Control -->
+    <div class="left-panel">
+
+        <!-- Upload Card -->
+        <div class="card">
+            <div class="card-title"><span class="icon">&#128196;</span> Upload Document</div>
+
+            <div id="upload-zone" class="upload-zone">
+                <span class="upload-icon">&#128228;</span>
+                <p>Drag & drop your file here, or click to browse</p>
+                <p class="format-hint">Supported: PDF, PNG, JPG, TIFF, BMP</p>
+                <input type="file" id="file-input" accept=".pdf,.png,.jpg,.jpeg,.tiff,.tif,.bmp">
+            </div>
+
+            <div id="file-info" class="file-info">
+                <span class="filename"></span>
+                <span class="filesize"></span>
+            </div>
+
+            <div class="btn-group">
+                <button id="btn-convert" class="btn btn-primary" disabled onclick="startConversion()">Convert to LaTeX</button>
+            </div>
+        </div>
+
+        <!-- Progress Card -->
+        <div class="card" style="margin-top: 24px;">
+            <div class="card-title"><span class="icon">&#9881;</span> Conversion Progress</div>
+
+            <div id="progress-section" class="progress-section">
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
+                    <span id="stage-badge" class="stage-badge processing">Initializing</span>
+                </div>
+                <div class="progress-bar-container">
+                    <div id="progress-bar" class="progress-bar"></div>
+                </div>
+                <div class="progress-label">
+                    <span id="progress-msg">Waiting...</span>
+                    <span id="progress-pct">0%</span>
+                </div>
+            </div>
+
+            <div id="log-panel" class="log-panel"></div>
+        </div>
+
+        <!-- System Status Card -->
+        <div class="card" style="margin-top: 24px;">
+            <div class="card-title"><span class="icon">&#128300;</span> System Status</div>
+            <div class="model-grid">
+                <div class="model-item">
+                    <span class="label">Ollama</span>
+                    <span id="ollama-status" class="value">--</span>
+                </div>
+                <div class="model-item">
+                    <span class="label">TeX Compiler</span>
+                    <span id="compiler-status" class="value">--</span>
+                </div>
+                <div class="model-item">
+                    <span class="label">DeTikZify</span>
+                    <span id="detikzify-status" class="value">--</span>
+                </div>
+                <div class="model-item">
+                    <span class="label">Models</span>
+                    <span id="models-count" class="value">--</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Right Panel: LaTeX Output -->
+    <div class="right-panel">
+        <div class="card" style="height: 100%; display: flex; flex-direction: column;">
+            <div class="card-title" style="justify-content: space-between;">
+                <span><span class="icon">&#128221;</span> LaTeX Output</span>
+                <div id="action-buttons" style="display: none; gap: 6px; display: none;">
+                    <button class="btn btn-secondary" onclick="copyLatex()" title="Copy to clipboard">Copy</button>
+                    <button class="btn btn-secondary" onclick="downloadTex()" title="Download .tex file">&#11015; .tex</button>
+                    <button class="btn btn-secondary" onclick="downloadPdf()" title="Download compiled PDF">&#11015; .pdf</button>
+                    <button class="btn btn-secondary" onclick="downloadZip()" title="Download all files">&#11015; .zip</button>
+                    <button class="btn btn-primary" onclick="recompile()" title="Recompile with edits">Recompile</button>
+                </div>
+            </div>
+
+            <textarea id="latex-editor" class="latex-editor" placeholder="% LaTeX output will appear here after conversion...&#10;% You can edit the code and recompile.&#10;&#10;\documentclass{article}&#10;\begin{document}&#10;&#10;\end{document}" spellcheck="false"></textarea>
+        </div>
+    </div>
+
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

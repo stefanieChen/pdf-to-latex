@@ -1,0 +1,103 @@
+# PDF-to-LaTeX System Configuration
+
+# Ollama settings
+ollama:
+  base_url: "http://localhost:11434"
+  models:
+    vlm: "minicpm-v"
+    llm: "qwen2.5:7b"
+  timeout: 300
+
+# DeTikZify settings
+detikzify:
+  model_name: "nllg/detikzify-v2.5-8b"
+  torch_dtype: "bfloat16"
+  quantize_4bit: true
+  mcts_timeout: 300
+  device_map: "auto"
+
+# Preprocessing settings
+preprocessing:
+  dpi: 300
+  denoise_strength: 10
+  binary_block_size: 11
+  binary_constant: 2
+  supported_formats:
+    - ".pdf"
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+    - ".tiff"
+    - ".tif"
+    - ".bmp"
+
+# Layout detection settings
+layout:
+  engine: "paddleocr"
+  confidence_threshold: 0.5
+  region_types:
+    - "text"
+    - "title"
+    - "formula"
+    - "table"
+    - "figure"
+
+# Recognition settings
+recognition:
+  ocr:
+    lang: "ch"
+    use_angle_cls: true
+    use_gpu: true
+  formula:
+    primary: "pix2tex"
+    fallback: "minicpm-v"
+  table:
+    engine: "ppstructure"
+  figure:
+    primary: "detikzify"
+    fallback: "minicpm-v"
+    final_fallback: "includegraphics"
+
+# Assembly settings
+assembly:
+  document_class: "article"
+  packages:
+    - "ctex"
+    - "amsmath"
+    - "amssymb"
+    - "graphicx"
+    - "tikz"
+    - "booktabs"
+    - "geometry"
+    - "fancyhdr"
+    - "multicol"
+    - "float"
+    - "hyperref"
+
+# Validation settings
+validation:
+  compiler: "xelatex"
+  compile_timeout: 60
+  ssim_threshold: 0.85
+  max_fix_rounds: 3
+  mcts_timeout: 600
+
+# Server settings
+server:
+  host: "0.0.0.0"
+  port: 8000
+  upload_max_size_mb: 100
+  task_result_ttl_hours: 24
+
+# Paths (relative to project root)
+paths:
+  input_dir: "data/input"
+  output_dir: "data/output"
+  temp_dir: "data/temp"
+  log_dir: "logs"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+  file: "logs/app.log"
