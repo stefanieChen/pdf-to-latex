@@ -101,6 +101,24 @@ pdf2latex/
 pytest tests/ -v
 ```
 
+## Monitoring & Observability
+
+### MLflow (Pipeline Metrics Tracking)
+
+Track conversion metrics (latency, SSIM, compilation success) across runs.
+
+```bash
+# Install
+pip install mlflow
+
+# Enable in config/settings.yaml
+# monitoring.mlflow.enabled: true
+
+# Start MLflow UI
+mlflow server --host 127.0.0.1 --port 5000
+# Open http://localhost:5000
+```
+
 ## Architecture
 
 ```

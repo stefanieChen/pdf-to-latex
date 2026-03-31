@@ -101,3 +101,10 @@ logging:
   level: "INFO"
   format: "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
   file: "logs/app.log"
+
+# Monitoring & Observability
+monitoring:
+  mlflow:
+    enabled: false  # Set to true after: pip install mlflow
+    tracking_uri: "mlruns"
+    experiment_name: "pdf-to-latex"

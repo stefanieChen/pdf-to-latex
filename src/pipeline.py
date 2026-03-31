@@ -28,6 +28,7 @@ from src.assembly.template_manager import TemplateManager
 from src.validation.latex_compiler import LatexCompiler
 from src.validation.visual_comparator import VisualComparator
 from src.validation.llm_reviewer import LLMReviewer
+from src.monitoring.mlflow_tracker import init_mlflow, log_conversion_run
 
 logger = logging.getLogger("pdf2latex.pipeline")
 
@@ -68,6 +69,9 @@ class Pipeline:
         self.config = config or load_config()
         self._init_components()
         self._progress_callback: Optional[Callable] = None
+
+        # Initialize MLflow tracking if enabled
+        init_mlflow(self.config)
 
     def _init_components(self) -> None:
         """Initialize all pipeline components."""
@@ -297,6 +301,25 @@ class Pipeline:
             # Release models
             self.scheduler.release()
 
+            # Log to MLflow
+            log_conversion_run(
+                task_id=task_id,
+                input_filename=input_path.name,
+                metrics={
+                    "total_time_s": round(elapsed, 2),
+                    "num_pages": len(page_images),
+                    "latex_length": len(latex_code),
+                    "compilation_success": 1.0 if status.output_pdf else 0.0,
+                },
+                params={
+                    "dpi": self.config.get("preprocessing", {}).get("dpi", 300),
+                    "compiler": self.config.get("validation", {}).get("compiler", "xelatex"),
+                    "vlm_model": self.config.get("ollama", {}).get("models", {}).get("vlm", ""),
+                    "llm_model": self.config.get("ollama", {}).get("models", {}).get("llm", ""),
+                },
+                success=True,
+            )
+
             logger.info("Pipeline complete: task=%s, time=%.1fs", task_id, elapsed)
             return status
 
@@ -307,6 +330,16 @@ class Pipeline:
             self._report_progress(status)
             logger.error("Pipeline failed: %s", e, exc_info=True)
             self.scheduler.release()
+
+            # Log failure to MLflow
+            log_conversion_run(
+                task_id=task_id,
+                input_filename=input_path.name,
+                metrics={"total_time_s": round(time.time() - start_time, 2)},
+                success=False,
+                tags={"error": str(e)[:250]},
+            )
+
             return status
 
     def _preprocess(self, input_path: Path, output_dir: Path) -> List[tuple]:

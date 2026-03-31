@@ -36,3 +36,7 @@ pytest-asyncio>=0.23.0
 
 # Async
 aiofiles>=23.2.0
+
+# --- Observability (MLflow) ---
+# Uncomment and install when ready to enable monitoring:
+# mlflow>=2.10
