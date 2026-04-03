@@ -21,7 +21,7 @@ def print_header(text: str) -> None:
 
 def print_status(name: str, ok: bool, detail: str = "") -> None:
     """Print a status line with checkmark or X."""
-    mark = "✓" if ok else "✗"
+    mark = "OK" if ok else "FAIL"
     detail_str = f" ({detail})" if detail else ""
     print(f"  [{mark}] {name}{detail_str}")
 
@@ -39,9 +39,9 @@ def get_python_cmd() -> str:
 
 
 def check_python() -> bool:
-    """Check Python version (3.8+ required)."""
+    """Check Python version (3.11+ required)."""
     version = sys.version_info
-    ok = version >= (3, 8)
+    ok = version >= (3, 11)
     print_status("Python", ok, f"{version.major}.{version.minor}.{version.micro}")
     return ok
 
@@ -210,7 +210,7 @@ def run_check() -> None:
     check_node()
 
     print(f"\n{'='*60}")
-    print("  Check complete. Fix any ✗ items above before proceeding.")
+    print("  Check complete. Fix any [FAIL] items above before proceeding.")
     print(f"{'='*60}\n")
 
 
@@ -223,8 +223,55 @@ def run_install() -> None:
     # Install Python packages
     print("\n  [1/3] Installing Python packages...")
     req_file = PROJECT_ROOT / "requirements.txt"
+    
+    # Use Tsinghua mirror for faster downloads in China
+    mirror_index = "https://pypi.tuna.tsinghua.edu.cn/simple"
+    mirror_host = "pypi.tuna.tsinghua.edu.cn"
+    
+    # Install core packages with mirror
     subprocess.run(
-        [python_cmd, "-m", "pip", "install", "-r", str(req_file)],
+        [python_cmd, "-m", "pip", "install", "-r", str(req_file), 
+         "-i", mirror_index, "--trusted-host", mirror_host],
+        cwd=str(PROJECT_ROOT),
+    )
+    
+    # Special handling for heavy packages (platform-specific mirrors)
+    print("\n  Installing heavy dependencies with optimized mirrors...")
+    
+    # PaddlePaddle - platform-specific official mirror
+    print("    Installing PaddlePaddle...")
+    if platform.system() == "Darwin":
+        paddle_find_url = "https://www.paddlepaddle.org.cn/whl/mac/cpu/stable.html"
+    else:
+        paddle_find_url = "https://www.paddlepaddle.org.cn/whl/windows/cpu-mkl-avx/stable.html"
+    subprocess.run(
+        [python_cmd, "-m", "pip", "install", "paddlepaddle>=2.5.0",
+         "-f", paddle_find_url,
+         "-i", mirror_index, "--trusted-host", mirror_host],
+        cwd=str(PROJECT_ROOT),
+    )
+    
+    # PaddleOCR - use mirror
+    print("    Installing PaddleOCR...")
+    subprocess.run(
+        [python_cmd, "-m", "pip", "install", "paddleocr>=2.7.0",
+         "-i", mirror_index, "--trusted-host", mirror_host],
+        cwd=str(PROJECT_ROOT),
+    )
+    
+    # pix2tex - use mirror
+    print("    Installing pix2tex...")
+    subprocess.run(
+        [python_cmd, "-m", "pip", "install", "pix2tex>=0.1.1",
+         "-i", mirror_index, "--trusted-host", mirror_host],
+        cwd=str(PROJECT_ROOT),
+    )
+    
+    # DeTikZify - use GitHub proxy for China network
+    print("    Installing DeTikZify...")
+    subprocess.run(
+        [python_cmd, "-m", "pip", "install",
+         "detikzify @ git+https://ghproxy.com/https://github.com/potamides/DeTikZify"],
         cwd=str(PROJECT_ROOT),
     )
 
@@ -244,6 +291,8 @@ def run_install() -> None:
 
     print_header("Installation Complete")
     print("  Run 'python setup_env.py --check' to verify.")
+    print("\n  NOTE: If installation failed, try running:")
+    print("    python setup_env.py --install")
 
 
 def main():

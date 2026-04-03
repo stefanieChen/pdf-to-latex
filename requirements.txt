@@ -4,15 +4,15 @@ opencv-python>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
 
+# --- Heavy packages (installed by setup_env.py --install with platform-specific mirrors) ---
 # OCR & Layout
-paddlepaddle>=2.5.0
-paddleocr>=2.7.0
+# paddlepaddle>=2.5.0
+# paddleocr>=2.7.0
 
 # Formula Recognition
-pix2tex>=0.1.1
+# pix2tex>=0.1.1
 
-# DeTikZify (Figure -> TikZ)
-detikzify @ git+https://github.com/potamides/DeTikZify
+# detikzify @ git+https://github.com/potamides/DeTikZify
 
 # LLM
 httpx>=0.25.0

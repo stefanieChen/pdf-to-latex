@@ -10,12 +10,26 @@
 - **图形→TikZ** — DeTikZify (NeurIPS 2024) + MCTS 迭代优化
 - **版面还原** — 自动检测多栏布局、阅读顺序
 - **自动校验** — xelatex 编译验证 + SSIM 视觉对比 + LLM 审核
-- **Web 界面** — FastAPI 后端 + React 前端，实时进度 WebSocket
+- **Web 界面** — FastAPI 后端 + 静态前端，实时进度 WebSocket
 - **跨平台** — 支持 Windows 和 macOS
 
 ## Quick Start
 
-### 1. Environment Setup
+### 1. Prerequisites
+
+- **Python 3.11+**（DeTikZify 要求）
+- **Ollama** with models: `minicpm-v`, `qwen2.5:7b`
+- **TeX Live** or **MiKTeX** (for xelatex)
+- **Ghostscript** + **Poppler** (for DeTikZify)
+
+macOS 系统依赖可通过 Homebrew 一键安装：
+
+```bash
+brew install ollama ghostscript poppler
+brew install --cask mactex
+```
+
+### 2. Environment Setup
 
 ```bash
 # Create and activate virtual environment
@@ -27,19 +41,14 @@ venv\Scripts\activate
 # macOS/Linux
 source venv/bin/activate
 
-# Check environment
-python setup_env.py --check
-
-# Install dependencies
+# Install all dependencies (uses Chinese mirrors)
 python setup_env.py --install
+
+# Verify environment
+python setup_env.py --check
 ```
 
-### 2. Prerequisites
-
-- **Python** 3.8+
-- **Ollama** with models: `minicpm-v`, `qwen2.5:7b`
-- **TeX Live** or **MiKTeX** (for xelatex)
-- **Ghostscript** + **Poppler** (for DeTikZify)
+> **Note:** 重型依赖（PaddlePaddle、PaddleOCR、pix2tex、DeTikZify）由 `setup_env.py --install` 统一安装，使用国内镜像，无需手动 pip install。
 
 ### 3. Start the System
 
@@ -50,7 +59,7 @@ python start.py
 This starts:
 - Ollama server (if not running)
 - API server at `http://localhost:8000`
-- Frontend at `http://localhost:3000` (if web/ exists)
+- Static frontend at `http://localhost:8000`
 
 ### 4. API Usage
 
