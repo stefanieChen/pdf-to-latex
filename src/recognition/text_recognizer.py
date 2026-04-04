@@ -47,15 +47,19 @@ class TextRecognizer:
             return
 
         from paddleocr import PaddleOCR
+        from src.config import get_paddle_device
 
-        logger.info("Initializing PaddleOCR (lang=%s, angle_cls=%s, GPU=%s)",
-                     self.lang, self.use_angle_cls, self.use_gpu)
-        self._engine = PaddleOCR(
-            use_angle_cls=self.use_angle_cls,
-            lang=self.lang,
-            use_gpu=self.use_gpu,
-            show_log=False,
-        )
+        device = get_paddle_device(self.use_gpu)
+        kwargs = {
+            "lang": self.lang,
+            "use_textline_orientation": self.use_angle_cls,
+            "device": device,
+        }
+        if device == "cpu":
+            kwargs["enable_mkldnn"] = False
+        logger.info("Initializing PaddleOCR (lang=%s, device=%s)",
+                     self.lang, device)
+        self._engine = PaddleOCR(**kwargs)
 
     def recognize(self, image: np.ndarray) -> List[TextLine]:
         """Recognize text in an image region.
@@ -68,27 +72,29 @@ class TextRecognizer:
         """
         self._init_engine()
 
-        results = self._engine.ocr(image, cls=self.use_angle_cls)
-        if not results or results[0] is None:
+        results = self._engine.predict(image)
+        if not results:
             return []
 
         lines = []
-        for result in results[0]:
-            polygon = result[0]  # [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-            text = result[1][0]
-            confidence = result[1][1]
+        for ocr_result in results:
+            rec_texts = ocr_result.get("rec_texts", [])
+            rec_scores = ocr_result.get("rec_scores", [])
+            rec_polys = ocr_result.get("rec_polys", [])
 
-            # Convert polygon to bounding box
-            xs = [p[0] for p in polygon]
-            ys = [p[1] for p in polygon]
-            bbox = (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
+            for text, score, polygon in zip(rec_texts, rec_scores, rec_polys):
+                # Convert polygon to bounding box
+                polygon = [[int(x), int(y)] for x, y in polygon]
+                xs = [p[0] for p in polygon]
+                ys = [p[1] for p in polygon]
+                bbox = (min(xs), min(ys), max(xs), max(ys))
 
-            lines.append(TextLine(
-                text=text,
-                confidence=confidence,
-                bbox=bbox,
-                polygon=[[int(x), int(y)] for x, y in polygon],
-            ))
+                lines.append(TextLine(
+                    text=text,
+                    confidence=float(score),
+                    bbox=bbox,
+                    polygon=polygon,
+                ))
 
         lines.sort(key=lambda l: l.sort_key)
         logger.debug("Recognized %d text lines", len(lines))

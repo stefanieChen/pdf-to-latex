@@ -71,14 +71,25 @@ def start_api_server() -> subprocess.Popen:
     python_cmd = get_python_cmd()
     print("  Starting API server on http://localhost:8000 ...")
 
-    proc = subprocess.Popen(
-        [python_cmd, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"],
-        cwd=str(PROJECT_ROOT),
-    )
-
-    # Wait briefly for startup
+    api_cmd = [python_cmd, "server.py"]
+    api_process = subprocess.Popen(api_cmd, cwd=str(PROJECT_ROOT))
+    
+    # Wait a moment for server to start
     time.sleep(2)
-    return proc
+    
+    # Determine which port is actually used
+    port = 8001
+    try:
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(('localhost', 8000))
+        sock.close()
+        if result == 0:
+            port = 8000  # 8000 is available
+    except:
+        port = 8001
+    
+    return api_process, port
 
 
 def start_frontend() -> subprocess.Popen:
@@ -124,7 +135,7 @@ def main():
 
         # 2. API Server
         print("\n[2/3] API Server")
-        api_proc = start_api_server()
+        api_proc, port = start_api_server()
         processes.append(api_proc)
 
         # 3. Frontend
@@ -135,8 +146,8 @@ def main():
 
         print("\n" + "=" * 50)
         print("  All services started!")
-        print("  API:      http://localhost:8000")
-        print("  API Docs: http://localhost:8000/docs")
+        print(f"  API:      http://localhost:{port}")
+        print(f"  API Docs: http://localhost:{port}/docs")
         if fe_proc:
             print("  Frontend: http://localhost:3000")
         print("  Press Ctrl+C to stop all services")

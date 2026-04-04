@@ -24,20 +24,19 @@ class TableRecognizer:
         self._engine = None
 
     def _init_engine(self) -> None:
-        """Lazy-initialize PPStructure table engine."""
+        """Lazy-initialize TableStructureRecognition engine."""
         if self._engine is not None:
             return
 
-        from paddleocr import PPStructure
+        from paddleocr import TableStructureRecognition
+        from src.config import get_paddle_device
 
-        logger.info("Initializing PPStructure table engine (GPU=%s)", self.use_gpu)
-        self._engine = PPStructure(
-            table=True,
-            ocr=True,
-            show_log=False,
-            use_gpu=self.use_gpu,
-            layout=False,
-        )
+        device = get_paddle_device(self.use_gpu)
+        kwargs = {"device": device}
+        if device == "cpu":
+            kwargs["enable_mkldnn"] = False
+        logger.info("Initializing TableStructureRecognition table engine (device=%s)", device)
+        self._engine = TableStructureRecognition(**kwargs)
 
     def recognize(self, image: np.ndarray) -> Optional[str]:
         """Recognize table structure and return LaTeX code.
@@ -65,13 +64,19 @@ class TableRecognizer:
         self._init_engine()
 
         try:
-            results = self._engine(image)
-            for item in results:
-                if item.get("type") == "table":
-                    html = item.get("res", {}).get("html", "")
-                    if html:
-                        logger.debug("Table HTML recognized (%d chars)", len(html))
-                        return html
+            result = self._engine.predict(image)
+            if result and len(result) > 0:
+                for item in result:
+                    # PaddleOCR 3.x: 'structure' is a list of HTML tokens
+                    if isinstance(item, dict) and 'structure' in item:
+                        structure = item['structure']
+                        if isinstance(structure, list):
+                            html = "".join(structure)
+                        else:
+                            html = str(structure)
+                        if html:
+                            logger.debug("Table HTML recognized (%d chars)", len(html))
+                            return html
         except Exception as e:
             logger.warning("Table recognition failed: %s", e)
 

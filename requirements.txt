@@ -12,6 +12,7 @@ numpy>=1.24.0
 # Formula Recognition
 # pix2tex>=0.1.1
 
+# DeTikZify (Figure -> Tikz)
 # detikzify @ git+https://github.com/potamides/DeTikZify
 
 # LLM

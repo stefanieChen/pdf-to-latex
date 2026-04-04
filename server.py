@@ -10,7 +10,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -91,7 +91,7 @@ async def health_check():
 
 
 @app.post("/api/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Upload a file for conversion.
 
     Args:
@@ -142,7 +142,7 @@ async def upload_file(file: UploadFile = File(...)):
     }
 
     # Start conversion in background
-    asyncio.create_task(_run_conversion(task_id, file_path))
+    background_tasks.add_task(_run_conversion, task_id, file_path)
 
     logger.info("Task created: %s for file %s", task_id, file.filename)
     return {"task_id": task_id, "filename": file.filename}
@@ -354,6 +354,7 @@ async def _run_conversion(task_id: str, file_path: Path) -> None:
         task_id: Task identifier.
         file_path: Path to the uploaded file.
     """
+    loop = asyncio.get_running_loop()
     pipeline = get_pipeline()
     output_dir = get_output_dir() / task_id
 
@@ -368,12 +369,11 @@ async def _run_conversion(task_id: str, file_path: Path) -> None:
             "output_pdf": str(status.output_pdf) if status.output_pdf else None,
         })
         # Notify WebSocket clients
-        asyncio.create_task(_notify_websockets(task_id))
+        loop.call_soon_threadsafe(loop.create_task, _notify_websockets(task_id))
 
     pipeline.set_progress_callback(progress_callback)
 
     # Run in executor to avoid blocking event loop
-    loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(
         None,
         lambda: pipeline.convert(file_path, output_dir, task_id),
@@ -415,10 +415,26 @@ async def _notify_websockets(task_id: str) -> None:
 
 if __name__ == "__main__":
     import uvicorn
+    import socket
+    
     server_cfg = config.get("server", {})
+    host = server_cfg.get("host", "0.0.0.0")
+    
+    # Try port 8000 first, fallback to 8001 if busy
+    port = server_cfg.get("port", 8000)
+    
+    # Check if port is available
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    result = sock.connect_ex(('localhost', port))
+    sock.close()
+    
+    if result == 0:  # Port is busy
+        port = 8001
+        print(f"Port 8000 busy, using port {port}")
+    
     uvicorn.run(
         "server:app",
-        host=server_cfg.get("host", "0.0.0.0"),
-        port=server_cfg.get("port", 8000),
+        host=host,
+        port=port,
         reload=False,
     )

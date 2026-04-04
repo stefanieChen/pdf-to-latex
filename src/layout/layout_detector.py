@@ -1,4 +1,4 @@
-"""Document layout detection using PaddleOCR PPStructure."""
+"""Document layout detection using PaddleOCR LayoutDetection."""
 
 import logging
 from dataclasses import dataclass, field
@@ -72,9 +72,9 @@ class DetectedRegion:
 
 
 class LayoutDetector:
-    """Detect document layout regions using PaddleOCR PPStructure."""
+    """Detect document layout regions using PaddleOCR LayoutDetection."""
 
-    # Map PPStructure type strings to RegionType
+    # Map PaddleOCR label strings to RegionType
     TYPE_MAP = {
         "text": RegionType.TEXT,
         "title": RegionType.TITLE,
@@ -100,20 +100,19 @@ class LayoutDetector:
         self._engine = None
 
     def _init_engine(self) -> None:
-        """Lazy-initialize the PPStructure engine."""
+        """Lazy-initialize the LayoutDetection engine."""
         if self._engine is not None:
             return
 
-        from paddleocr import PPStructure
+        from paddleocr import LayoutDetection
+        from src.config import get_paddle_device
 
-        logger.info("Initializing PPStructure layout engine (GPU=%s)", self.use_gpu)
-        self._engine = PPStructure(
-            table=False,
-            ocr=False,
-            show_log=False,
-            use_gpu=self.use_gpu,
-            layout=True,
-        )
+        device = get_paddle_device(self.use_gpu)
+        kwargs = {"device": device}
+        if device == "cpu":
+            kwargs["enable_mkldnn"] = False
+        logger.info("Initializing LayoutDetection engine (device=%s)", device)
+        self._engine = LayoutDetection(**kwargs)
 
     def detect(self, image: np.ndarray, page_num: int = 0) -> List[DetectedRegion]:
         """Detect layout regions in a document image.
@@ -129,37 +128,39 @@ class LayoutDetector:
 
         logger.debug("Detecting layout for page %d (image: %dx%d)", page_num, image.shape[1], image.shape[0])
 
-        results = self._engine(image)
+        results = self._engine.predict(image)
         regions = []
 
-        for item in results:
-            region_type_str = item.get("type", "unknown").lower()
-            region_type = self.TYPE_MAP.get(region_type_str, RegionType.UNKNOWN)
+        for det_result in results:
+            boxes = det_result.get("boxes", [])
+            for item in boxes:
+                region_type_str = item.get("label", "unknown").lower()
+                region_type = self.TYPE_MAP.get(region_type_str, RegionType.UNKNOWN)
 
-            bbox_coords = item.get("bbox", [0, 0, 0, 0])
-            if len(bbox_coords) == 4:
-                bbox = BBox(
-                    x1=int(bbox_coords[0]),
-                    y1=int(bbox_coords[1]),
-                    x2=int(bbox_coords[2]),
-                    y2=int(bbox_coords[3]),
+                bbox_coords = item.get("coordinate", [0, 0, 0, 0])
+                if len(bbox_coords) >= 4:
+                    bbox = BBox(
+                        x1=int(bbox_coords[0]),
+                        y1=int(bbox_coords[1]),
+                        x2=int(bbox_coords[2]),
+                        y2=int(bbox_coords[3]),
+                    )
+                else:
+                    continue
+
+                confidence = float(item.get("score", 0.0))
+
+                if confidence < self.confidence_threshold:
+                    continue
+
+                region = DetectedRegion(
+                    region_type=region_type,
+                    bbox=bbox,
+                    confidence=confidence,
+                    page_num=page_num,
+                    raw_data=item,
                 )
-            else:
-                continue
-
-            confidence = float(item.get("score", 0.0))
-
-            if confidence < self.confidence_threshold:
-                continue
-
-            region = DetectedRegion(
-                region_type=region_type,
-                bbox=bbox,
-                confidence=confidence,
-                page_num=page_num,
-                raw_data=item,
-            )
-            regions.append(region)
+                regions.append(region)
 
         # Sort by reading order
         regions.sort(key=lambda r: r.sort_key)
