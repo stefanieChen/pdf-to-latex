@@ -161,22 +161,6 @@ def check_poppler() -> bool:
     print_status("Poppler", False, "Not found (optional)")
     return False
 
-
-def check_node() -> bool:
-    """Check if Node.js is installed (for React frontend)."""
-    node = shutil.which("node")
-    if node:
-        try:
-            result = subprocess.run(["node", "--version"], capture_output=True, text=True, timeout=5)
-            print_status("Node.js", True, result.stdout.strip())
-            return True
-        except Exception:
-            pass
-
-    print_status("Node.js", False, "Not found (needed for web frontend)")
-    return False
-
-
 def check_venv() -> bool:
     """Check if the virtual environment exists."""
     if platform.system() == "Windows":
@@ -189,6 +173,49 @@ def check_venv() -> bool:
     return ok
 
 
+def check_packages() -> bool:
+    """Check if core Python packages are installed."""
+    req_file = PROJECT_ROOT / "requirements.txt"
+    
+    if not req_file.exists():
+        print_status("Python packages", False, "requirements.txt not found")
+        return False
+    
+    # Read packages from requirements.txt
+    core_packages = []
+    try:
+        with open(req_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                # Skip comments and empty lines
+                if line and not line.startswith('#'):
+                    # Extract package name (before >=, ==, etc.)
+                    package = line.split('>=')[0].split('==')[0].split('@')[0].strip()
+                    # Skip heavy packages that are installed separately
+                    if package not in ['paddlepaddle', 'paddleocr', 'pix2tex', 'detikzify', 'mlflow']:
+                        core_packages.append(package)
+    except Exception as e:
+        print_status("Python packages", False, f"Error reading requirements.txt: {e}")
+        return False
+    
+    missing = []
+    
+    for package in core_packages:
+        try:
+            # Handle package name differences between pip and import
+            import_name = package.replace("-", "_").replace("python_multipart", "multipart")
+            __import__(import_name)
+        except ImportError:
+            missing.append(package)
+    
+    if missing:
+        print_status("Python packages", False, f"Missing: {', '.join(missing[:3])}{'...' if len(missing) > 3 else ''}")
+        return False
+    else:
+        print_status("Python packages", True, f"Core packages installed ({len(core_packages)})")
+        return True
+
+
 def run_check() -> None:
     """Run all environment checks."""
     print_header("PDF-to-LaTeX Environment Check")
@@ -199,6 +226,7 @@ def run_check() -> None:
     print_header("Core Requirements")
     check_python()
     check_venv()
+    check_packages()
     check_gpu()
 
     print_header("External Tools")
@@ -207,7 +235,6 @@ def run_check() -> None:
     check_tex()
     check_ghostscript()
     check_poppler()
-    check_node()
 
     print(f"\n{'='*60}")
     print("  Check complete. Fix any [FAIL] items above before proceeding.")
