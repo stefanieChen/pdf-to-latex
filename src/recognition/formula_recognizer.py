@@ -176,4 +176,47 @@ class FormulaRecognizer:
         if text.startswith("\\[") and text.endswith("\\]"):
             text = text[2:-2].strip()
 
+        # Fix common LaTeX syntax errors
+        text = FormulaRecognizer._fix_common_latex_errors(text)
+
         return text
+
+    @staticmethod
+    def _fix_common_latex_errors(latex: str) -> str:
+        """Fix common LaTeX syntax errors in recognized formulas.
+
+        Args:
+            latex: Raw LaTeX code.
+
+        Returns:
+            Fixed LaTeX code.
+        """
+        # Fix common command errors
+        fixes = {
+            r'\sqr': r'\sqrt',
+            r'\sinx': r'\sin x',
+            r'\cosx': r'\cos x',
+            r'\tanx': r'\tan x',
+            r'\lnx': r'\ln x',
+            r'\logx': r'\log x',
+        }
+
+        for wrong, correct in fixes.items():
+            latex = latex.replace(wrong, correct)
+
+        # Fix missing braces around fractions and roots
+        import re
+        
+        # Fix \sqrt without braces
+        latex = re.sub(r'\\sqrt\s+([a-zA-Z])', r'\\sqrt{\1}', latex)
+        
+        # Fix fractions without braces
+        latex = re.sub(r'\\frac\s+([a-zA-Z0-9])\s+([a-zA-Z0-9])', r'\\frac{\1}{\2}', latex)
+        
+        # Fix powers without braces
+        latex = re.sub(r'\^([a-zA-Z0-9]+)', r'^{\1}', latex)
+        
+        # Fix subscripts without braces  
+        latex = re.sub(r'_([a-zA-Z0-9]+)', r'_{\1}', latex)
+
+        return latex
