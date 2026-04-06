@@ -27,6 +27,9 @@ websockets>=12.0
 # Validation
 scikit-image>=0.22.0
 
+# Profiling & Benchmarking
+psutil>=5.9.0
+
 # Config & Utils
 pyyaml>=6.0
 python-dotenv>=1.0.0
@@ -41,3 +44,4 @@ aiofiles>=23.2.0
 # --- Observability (MLflow) ---
 # Uncomment and install when ready to enable monitoring:
 # mlflow>=2.10
+# psutil is also used by the benchmark script (scripts/benchmark.py)

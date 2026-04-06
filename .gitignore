@@ -40,6 +40,13 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Installers / binaries
+*.exe
+
+# Temp files
+delete_temp.txt
+commit_message.txt
+
 # Secrets
 .env
 

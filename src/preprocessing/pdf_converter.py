@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -111,3 +111,71 @@ class PdfConverter:
 
         doc.close()
         return img_bgr
+
+    def has_embedded_text(self, pdf_path: Path, min_chars: int = 20) -> bool:
+        """Check whether a PDF contains embedded (selectable) text.
+
+        A PDF with embedded text can skip OCR for text regions, yielding a
+        large speed-up on digital (non-scanned) documents.
+
+        Args:
+            pdf_path: Path to PDF file.
+            min_chars: Minimum character count on a page to consider it
+                text-bearing.
+
+        Returns:
+            True if at least one page has embedded text.
+        """
+        doc = fitz.open(str(pdf_path))
+        try:
+            for page in doc:
+                text = page.get_text("text").strip()
+                if len(text) >= min_chars:
+                    return True
+            return False
+        finally:
+            doc.close()
+
+    def extract_text_blocks(
+        self, pdf_path: Path, page_num: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Extract text blocks with bounding boxes from a PDF page.
+
+        Each block dict contains ``text``, ``bbox`` (x0, y0, x1, y1 in
+        points), and ``type`` (0 = text, 1 = image).  Coordinates are in
+        PDF points (72 DPI); callers should scale to match the rendered
+        image DPI.
+
+        Args:
+            pdf_path: Path to PDF file.
+            page_num: 0-indexed page number.
+
+        Returns:
+            List of block dicts with ``text``, ``bbox``, ``type``.
+        """
+        doc = fitz.open(str(pdf_path))
+        try:
+            page = doc[page_num]
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
+            result: List[Dict[str, Any]] = []
+            for blk in blocks:
+                blk_type = blk.get("type", 0)
+                bbox = blk.get("bbox", (0, 0, 0, 0))
+                if blk_type == 0:  # text block
+                    lines_text = []
+                    for line in blk.get("lines", []):
+                        spans_text = "".join(
+                            span.get("text", "") for span in line.get("spans", [])
+                        )
+                        lines_text.append(spans_text)
+                    text = "\n".join(lines_text)
+                else:
+                    text = ""
+                result.append({
+                    "text": text,
+                    "bbox": tuple(int(c * self._zoom) for c in bbox),
+                    "type": blk_type,
+                })
+            return result
+        finally:
+            doc.close()

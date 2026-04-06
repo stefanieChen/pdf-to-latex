@@ -236,6 +236,17 @@ def run_check() -> None:
     check_ghostscript()
     check_poppler()
 
+    print_header("Hints")
+    if platform.system() == "Darwin":
+        print("  macOS detected. Install missing tools with Homebrew:")
+        print("    brew install ollama ghostscript poppler")
+        print("    brew install --cask mactex-no-gui   # TeX distribution")
+    elif platform.system() == "Windows":
+        print("  Windows detected. Install missing tools:")
+        print("    - Ollama: https://ollama.com/download")
+        print("    - MiKTeX: https://miktex.org/download")
+        print("    - Ghostscript: https://ghostscript.com/releases/")
+
     print(f"\n{'='*60}")
     print("  Check complete. Fix any [FAIL] items above before proceeding.")
     print(f"{'='*60}\n")

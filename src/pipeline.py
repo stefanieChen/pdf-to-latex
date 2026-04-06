@@ -1,12 +1,14 @@
 """Main pipeline orchestrating the full PDF/Image to LaTeX conversion."""
 
+import concurrent.futures
 import hashlib
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -55,6 +57,8 @@ class TaskStatus:
     error: Optional[str] = None
     output_tex: Optional[Path] = None
     output_pdf: Optional[Path] = None
+    stage_times: Dict[str, float] = field(default_factory=dict)
+    ssim_score: Optional[float] = None
 
 
 class Pipeline:
@@ -166,6 +170,9 @@ class Pipeline:
             max_fix_rounds=val_cfg.get("max_fix_rounds", 3),
         )
 
+        # Eagerly warm up PaddleOCR engines to avoid first-request cold start
+        self._warm_up_engines()
+
     def set_progress_callback(self, callback: Callable[[TaskStatus], None]) -> None:
         """Set a callback function for progress updates.
 
@@ -178,6 +185,26 @@ class Pipeline:
         """Report progress through the callback if set."""
         if self._progress_callback:
             self._progress_callback(status)
+
+    def _warm_up_engines(self) -> None:
+        """Eagerly initialize PaddleOCR engines to avoid first-request cold start.
+
+        Layout detection, text recognition, and table recognition all lazy-init
+        their PaddleOCR backends on first call.  By calling ``_init_engine()``
+        here we pay the cost once at startup rather than on the first conversion.
+        """
+        engines = [
+            ("LayoutDetector", self.layout_detector),
+            ("TextRecognizer", self.text_recognizer),
+            ("TableRecognizer", self.table_recognizer),
+        ]
+        for name, engine in engines:
+            try:
+                if hasattr(engine, "_init_engine"):
+                    engine._init_engine()
+                    logger.info("Warm-up: %s engine ready", name)
+            except Exception as e:
+                logger.warning("Warm-up: %s init failed (will retry on first use): %s", name, e)
 
     def convert(
         self,
@@ -211,6 +238,7 @@ class Pipeline:
 
         try:
             # Stage 1: Preprocessing
+            stage_t0 = time.perf_counter()
             status.stage = PipelineStage.PREPROCESSING
             status.progress = 0.1
             status.message = "Preprocessing input files..."
@@ -218,8 +246,10 @@ class Pipeline:
 
             page_images = self._preprocess(input_path, output_dir)
             logger.info("Preprocessed %d pages", len(page_images))
+            status.stage_times["preprocessing"] = round(time.perf_counter() - stage_t0, 2)
 
             # Stage 2: Layout Analysis
+            stage_t0 = time.perf_counter()
             status.stage = PipelineStage.LAYOUT
             status.progress = 0.25
             status.message = "Analyzing document layout..."
@@ -236,8 +266,10 @@ class Pipeline:
                     "num_columns": num_cols,
                     "page_num": i,
                 })
+            status.stage_times["layout_analysis"] = round(time.perf_counter() - stage_t0, 2)
 
             # Stage 3: Recognition
+            stage_t0 = time.perf_counter()
             status.stage = PipelineStage.RECOGNITION
             status.progress = 0.4
             status.message = "Recognizing content..."
@@ -253,8 +285,10 @@ class Pipeline:
                 status.progress = 0.4 + (0.3 * (i + 1) / len(page_layouts))
                 status.message = f"Recognizing page {i + 1}/{len(page_layouts)}..."
                 self._report_progress(status)
+            status.stage_times["recognition"] = round(time.perf_counter() - stage_t0, 2)
 
             # Stage 4: Assembly
+            stage_t0 = time.perf_counter()
             status.stage = PipelineStage.ASSEMBLY
             status.progress = 0.75
             status.message = "Assembling LaTeX document..."
@@ -270,14 +304,21 @@ class Pipeline:
             tex_path.write_text(latex_code, encoding="utf-8")
             status.output_tex = tex_path
             logger.info("LaTeX document written: %s (%d chars)", tex_path, len(latex_code))
+            status.stage_times["assembly"] = round(time.perf_counter() - stage_t0, 2)
 
             # Stage 5: Validation
+            stage_t0 = time.perf_counter()
             status.stage = PipelineStage.VALIDATION
             status.progress = 0.85
             status.message = "Compiling and validating..."
             self._report_progress(status)
 
             if self.compiler.is_available():
+                # Pre-validate: catch trivially broken LaTeX without spawning xelatex
+                pre_errors = self.compiler.pre_validate(latex_code)
+                if pre_errors:
+                    logger.info("Pre-validation issues: %s — sending to LLM fix", pre_errors)
+
                 latex_code, success, pdf_path = self.reviewer.auto_fix_loop(
                     latex_code, self.compiler, output_dir
                 )
@@ -286,10 +327,24 @@ class Pipeline:
                     status.output_pdf = pdf_path
                     # Update tex with fixed version
                     tex_path.write_text(latex_code, encoding="utf-8")
+
+                    # Compute SSIM between source and output (Phase 5c)
+                    try:
+                        if page_images:
+                            source_img = page_images[0][1]  # first page BGR
+                            rendered_img = self.pdf_converter.convert_page_to_numpy(
+                                pdf_path, page_num=0,
+                            )
+                            ssim_score, _ = self.comparator.compare(source_img, rendered_img)
+                            status.ssim_score = round(ssim_score, 4)
+                            logger.info("Output SSIM score: %.4f", ssim_score)
+                    except Exception as ssim_err:
+                        logger.debug("SSIM comparison skipped: %s", ssim_err)
                 else:
                     logger.warning("Compilation failed after auto-fix attempts")
             else:
                 logger.warning("LaTeX compiler not available, skipping compilation")
+            status.stage_times["validation"] = round(time.perf_counter() - stage_t0, 2)
 
             # Done
             status.stage = PipelineStage.COMPLETE
@@ -301,16 +356,21 @@ class Pipeline:
             # Release models
             self.scheduler.release()
 
-            # Log to MLflow
+            # Log to MLflow (include per-stage timings and SSIM)
+            metrics = {
+                "total_time_s": round(elapsed, 2),
+                "num_pages": len(page_images),
+                "latex_length": len(latex_code),
+                "compilation_success": 1.0 if status.output_pdf else 0.0,
+            }
+            metrics.update({f"stage_{k}_s": v for k, v in status.stage_times.items()})
+            if status.ssim_score is not None:
+                metrics["ssim_score"] = status.ssim_score
+
             log_conversion_run(
                 task_id=task_id,
                 input_filename=input_path.name,
-                metrics={
-                    "total_time_s": round(elapsed, 2),
-                    "num_pages": len(page_images),
-                    "latex_length": len(latex_code),
-                    "compilation_success": 1.0 if status.output_pdf else 0.0,
-                },
+                metrics=metrics,
                 params={
                     "dpi": self.config.get("preprocessing", {}).get("dpi", 300),
                     "compiler": self.config.get("validation", {}).get("compiler", "xelatex"),
@@ -320,7 +380,10 @@ class Pipeline:
                 success=True,
             )
 
-            logger.info("Pipeline complete: task=%s, time=%.1fs", task_id, elapsed)
+            logger.info(
+                "Pipeline complete: task=%s, time=%.1fs, stages=%s",
+                task_id, elapsed, status.stage_times,
+            )
             return status
 
         except Exception as e:
@@ -345,12 +408,16 @@ class Pipeline:
     def _preprocess(self, input_path: Path, output_dir: Path) -> List[tuple]:
         """Preprocess input files into enhanced page images.
 
+        PDF-to-image conversion runs serially (single ``fitz.open`` call per
+        PDF), but per-page enhancement (denoise + deskew) is parallelised with
+        a :class:`~concurrent.futures.ThreadPoolExecutor`.
+
         Args:
             input_path: Input file or directory.
             output_dir: Output directory for intermediate files.
 
         Returns:
-            List of (image_path, image_array) tuples.
+            List of (image_path, image_array) tuples, ordered by page number.
         """
         pages_dir = output_dir / "pages"
         pages_dir.mkdir(exist_ok=True)
@@ -365,27 +432,42 @@ class Pipeline:
             pdfs = []
             images = [input_path]
 
-        page_images = []
+        # Collect all raw (path, image) pairs first
+        raw_pages: List[Tuple[Path, np.ndarray]] = []
 
-        # Convert PDFs to images
         for pdf_path in pdfs:
             img_paths = self.pdf_converter.convert(pdf_path, pages_dir)
             for img_path in img_paths:
                 img = cv2.imread(str(img_path))
                 if img is not None:
-                    enhanced = self.image_enhancer.enhance(img, denoise=True, deskew=True)
-                    cv2.imwrite(str(img_path), enhanced)
-                    page_images.append((img_path, enhanced))
+                    raw_pages.append((img_path, img))
 
-        # Load and enhance standalone images
         for img_path in images:
             img = cv2.imread(str(img_path))
             if img is not None:
-                enhanced = self.image_enhancer.enhance(img, denoise=True, deskew=True)
                 out_path = pages_dir / img_path.name
-                cv2.imwrite(str(out_path), enhanced)
-                page_images.append((out_path, enhanced))
+                raw_pages.append((out_path, img))
 
+        # Enhance pages in parallel (each page is independent)
+        max_workers = min(os.cpu_count() or 1, 4)
+
+        def _enhance_page(item: Tuple[Path, np.ndarray]) -> Tuple[Path, np.ndarray]:
+            img_path, img = item
+            enhanced = self.image_enhancer.enhance(img, denoise=True, deskew=True)
+            cv2.imwrite(str(img_path), enhanced)
+            return (img_path, enhanced)
+
+        page_images: List[Tuple[Path, np.ndarray]] = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = [pool.submit(_enhance_page, item) for item in raw_pages]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    page_images.append(future.result())
+                except Exception as e:
+                    logger.warning("Page enhancement failed: %s", e)
+
+        # Re-sort by filename to preserve page order
+        page_images.sort(key=lambda x: str(x[0]))
         return page_images
 
     def _recognize_page(
@@ -394,7 +476,13 @@ class Pipeline:
         output_dir: Path,
         use_mcts: bool,
     ) -> List[Dict[str, Any]]:
-        """Recognize all regions on a page.
+        """Recognize all regions on a page, batched by model type.
+
+        Regions are grouped by type to minimize expensive model switches:
+        1. TEXT / TITLE / TABLE — PaddleOCR (no LLM model needed)
+        2. FORMULA — Ollama VLM
+        3. FIGURE — DeTikZify (or VLM fallback)
+        Results are reassembled in original reading order.
 
         Args:
             page: Page dict with 'image', 'regions', etc.
@@ -409,38 +497,54 @@ class Pipeline:
         figures_dir = output_dir / "figures"
         figures_dir.mkdir(exist_ok=True)
 
-        recognized = []
-        for region in regions:
+        # Pre-crop all regions and build index
+        indexed_regions: List[Tuple[int, Any, np.ndarray]] = []
+        for i, region in enumerate(regions):
             cropped = self.layout_detector.crop_region(image, region)
-            bbox = region.bbox.to_tuple()
+            indexed_regions.append((i, region, cropped))
 
-            if region.region_type == RegionType.TEXT or region.region_type == RegionType.TITLE:
-                latex = self.text_recognizer.recognize_to_latex(cropped)
+        # Results dict keyed by original index
+        results: Dict[int, str] = {}
 
-            elif region.region_type == RegionType.FORMULA:
-                self.scheduler.acquire(ModelType.OLLAMA_VLM)
-                code = self.formula_recognizer.recognize(cropped)
-                latex = code if code else ""
-
+        # --- Batch 1: TEXT / TITLE / TABLE (PaddleOCR, no model switch) ---
+        for i, region, cropped in indexed_regions:
+            if region.region_type in (RegionType.TEXT, RegionType.TITLE):
+                results[i] = self.text_recognizer.recognize_to_latex(cropped)
             elif region.region_type == RegionType.TABLE:
                 latex_table = self.table_recognizer.recognize(cropped)
-                latex = latex_table if latex_table else ""
+                results[i] = latex_table if latex_table else ""
+            elif region.region_type == RegionType.UNKNOWN:
+                results[i] = self.text_recognizer.recognize_to_latex(cropped)
 
-            elif region.region_type == RegionType.FIGURE:
-                fig_path = figures_dir / f"fig_p{page['page_num']}_r{len(recognized)}.png"
+        # --- Batch 2: FORMULA (Ollama VLM) ---
+        formula_regions = [(i, r, c) for i, r, c in indexed_regions
+                           if r.region_type == RegionType.FORMULA]
+        if formula_regions:
+            self.scheduler.acquire(ModelType.OLLAMA_VLM)
+            for i, region, cropped in formula_regions:
+                code = self.formula_recognizer.recognize(cropped)
+                results[i] = code if code else ""
+
+        # --- Batch 3: FIGURE (DeTikZify) ---
+        figure_regions = [(i, r, c) for i, r, c in indexed_regions
+                          if r.region_type == RegionType.FIGURE]
+        if figure_regions:
+            for i, region, cropped in figure_regions:
+                fig_path = figures_dir / f"fig_p{page['page_num']}_r{i}.png"
                 latex = self.figure_recognizer.recognize(
                     cropped,
                     use_mcts=use_mcts,
                     save_original_path=fig_path,
                 )
+                results[i] = latex
 
-            else:
-                latex = self.text_recognizer.recognize_to_latex(cropped)
-
+        # Reassemble in original reading order
+        recognized = []
+        for i, region, _ in indexed_regions:
             recognized.append({
                 "type": region.region_type,
-                "latex": latex,
-                "bbox": bbox,
+                "latex": results.get(i, ""),
+                "bbox": region.bbox.to_tuple(),
                 "confidence": region.confidence,
             })
 

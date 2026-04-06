@@ -1,7 +1,6 @@
 """Math formula recognition: image to LaTeX math code."""
 
 import logging
-from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -93,21 +92,16 @@ class FormulaRecognizer:
     def _recognize_vlm(self, image: np.ndarray) -> Optional[str]:
         """Recognize formula using Ollama VLM (minicpm-v).
 
+        Passes the numpy array directly to OllamaClient which encodes it
+        in-memory as PNG, avoiding disk I/O with temp files.
+
         Args:
             image: Formula image as BGR numpy array.
 
         Returns:
             LaTeX math code or None.
         """
-        import base64
-        import tempfile
-
         try:
-            # Save to temp file for Ollama
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                cv2.imwrite(tmp.name, image)
-                tmp_path = tmp.name
-
             prompt = (
                 "This image contains a mathematical formula. "
                 "Please output ONLY the LaTeX math code for this formula, "
@@ -118,15 +112,11 @@ class FormulaRecognizer:
             result = self.ollama_client.generate(
                 model=self.ollama_model,
                 prompt=prompt,
-                images=[tmp_path],
+                images=[image],
                 temperature=0.05,
             )
 
-            # Clean up temp file
-            Path(tmp_path).unlink(missing_ok=True)
-
             if result and result.strip():
-                # Clean up response
                 cleaned = self._clean_latex_response(result)
                 logger.debug("VLM formula result: %s", cleaned[:100])
                 return cleaned

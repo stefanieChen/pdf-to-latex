@@ -101,6 +101,42 @@ class VisualComparator:
             return self._compute_ssim_cv(img1, img2)
 
     @staticmethod
+    def compare_images(image_a, image_b) -> float:
+        """Compare two PIL Images and return an SSIM score.
+
+        Convenience method used by the progressive DeTikZify quality gate.
+        Accepts PIL.Image.Image or numpy arrays.
+
+        Args:
+            image_a: First image (PIL Image or numpy BGR/RGB array).
+            image_b: Second image (PIL Image or numpy BGR/RGB array).
+
+        Returns:
+            SSIM score between -1 and 1.
+        """
+        def _to_gray(img) -> np.ndarray:
+            # PIL Image
+            try:
+                from PIL import Image as PILImage
+                if isinstance(img, PILImage.Image):
+                    img = np.array(img.convert("L"))
+                    return img
+            except ImportError:
+                pass
+            # numpy array
+            if len(img.shape) == 3:
+                return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            return img
+
+        g1 = _to_gray(image_a)
+        g2 = _to_gray(image_b)
+        h = min(g1.shape[0], g2.shape[0])
+        w = min(g1.shape[1], g2.shape[1])
+        g1 = cv2.resize(g1, (w, h))
+        g2 = cv2.resize(g2, (w, h))
+        return float(VisualComparator._compute_ssim_cv(g1, g2))
+
+    @staticmethod
     def _compute_ssim_cv(img1: np.ndarray, img2: np.ndarray) -> float:
         """Approximate SSIM using OpenCV (fallback).
 

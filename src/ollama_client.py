@@ -5,7 +5,9 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import cv2
 import httpx
+import numpy as np
 
 logger = logging.getLogger("pdf2latex.ollama")
 
@@ -64,20 +66,25 @@ class OllamaClient:
         self,
         model: str,
         prompt: str,
-        images: Optional[List[Union[str, Path]]] = None,
+        images: Optional[List[Union[str, Path, bytes, np.ndarray]]] = None,
         system: Optional[str] = None,
         temperature: float = 0.1,
         stream: bool = False,
+        keep_alive: Optional[str] = "5m",
     ) -> str:
         """Generate a response from an Ollama model.
 
         Args:
             model: Model name.
             prompt: User prompt text.
-            images: Optional list of image paths or base64 strings for VLM.
+            images: Optional list of image paths, base64 strings, raw bytes,
+                or numpy arrays (BGR) for VLM.
             system: Optional system prompt.
             temperature: Sampling temperature.
             stream: Whether to stream the response.
+            keep_alive: How long Ollama keeps the model loaded after this
+                request.  Defaults to ``"5m"`` to avoid redundant reloads.
+                Set to ``"0"`` to unload immediately.
 
         Returns:
             Generated text response.
@@ -88,6 +95,9 @@ class OllamaClient:
             "stream": stream,
             "options": {"temperature": temperature},
         }
+
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
 
         if system:
             payload["system"] = system
@@ -104,18 +114,21 @@ class OllamaClient:
         self,
         model: str,
         prompt: str,
-        images: Optional[List[Union[str, Path]]] = None,
+        images: Optional[List[Union[str, Path, bytes, np.ndarray]]] = None,
         system: Optional[str] = None,
         temperature: float = 0.1,
+        keep_alive: Optional[str] = "5m",
     ) -> str:
         """Async version of generate.
 
         Args:
             model: Model name.
             prompt: User prompt text.
-            images: Optional list of image paths or base64 strings for VLM.
+            images: Optional list of image paths, base64 strings, raw bytes,
+                or numpy arrays (BGR) for VLM.
             system: Optional system prompt.
             temperature: Sampling temperature.
+            keep_alive: How long Ollama keeps the model loaded after request.
 
         Returns:
             Generated text response.
@@ -126,6 +139,9 @@ class OllamaClient:
             "stream": False,
             "options": {"temperature": temperature},
         }
+
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
 
         if system:
             payload["system"] = system
@@ -158,19 +174,35 @@ class OllamaClient:
             logger.warning("Failed to unload model %s: %s", model, e)
             return False
 
-    def _encode_image(self, image: Union[str, Path]) -> str:
+    def _encode_image(self, image: Union[str, Path, bytes, np.ndarray]) -> str:
         """Encode an image to base64 string.
 
+        Accepts file paths, raw bytes, numpy arrays (BGR), or already
+        base64-encoded strings.
+
         Args:
-            image: Image file path or already base64-encoded string.
+            image: Image in any of the supported formats.
 
         Returns:
             Base64 encoded image string.
         """
+        # numpy array (BGR) — encode in-memory as PNG
+        if isinstance(image, np.ndarray):
+            success, buf = cv2.imencode(".png", image)
+            if success:
+                return base64.b64encode(buf.tobytes()).decode("utf-8")
+            raise ValueError("Failed to encode numpy image to PNG")
+
+        # Raw bytes
+        if isinstance(image, bytes):
+            return base64.b64encode(image).decode("utf-8")
+
+        # File path
         path = Path(image)
         if path.exists():
             with open(path, "rb") as f:
                 return base64.b64encode(f.read()).decode("utf-8")
+
         # Assume it's already base64
         return str(image)
 

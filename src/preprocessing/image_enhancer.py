@@ -13,11 +13,18 @@ logger = logging.getLogger("pdf2latex.preprocessing.enhance")
 class ImageEnhancer:
     """Enhance scanned document images: denoise, binarize, deskew."""
 
+    # Laplacian variance thresholds for noise detection
+    NOISE_CLEAN_THRESHOLD = 500.0    # above this = clean, skip denoise
+    NOISE_MODERATE_THRESHOLD = 100.0  # above this = moderate, use bilateral
+    # below NOISE_MODERATE_THRESHOLD = noisy, use NLM
+
     def __init__(
         self,
         denoise_strength: int = 10,
         binary_block_size: int = 11,
         binary_constant: int = 2,
+        noise_clean_threshold: float = 500.0,
+        noise_moderate_threshold: float = 100.0,
     ):
         """Initialize ImageEnhancer.
 
@@ -25,10 +32,16 @@ class ImageEnhancer:
             denoise_strength: Strength of Non-Local Means denoising.
             binary_block_size: Block size for adaptive thresholding (odd number).
             binary_constant: Constant subtracted from mean in adaptive threshold.
+            noise_clean_threshold: Laplacian variance above which image is
+                considered clean (denoising skipped entirely).
+            noise_moderate_threshold: Laplacian variance above which a fast
+                bilateral filter is used instead of slow NLM.
         """
         self.denoise_strength = denoise_strength
         self.binary_block_size = binary_block_size
         self.binary_constant = binary_constant
+        self.noise_clean_threshold = noise_clean_threshold
+        self.noise_moderate_threshold = noise_moderate_threshold
 
     def enhance(
         self,
@@ -64,11 +77,66 @@ class ImageEnhancer:
 
         return result
 
-    def apply_denoise(self, image: np.ndarray) -> np.ndarray:
-        """Apply Non-Local Means denoising.
+    def estimate_noise_level(self, image: np.ndarray) -> float:
+        """Estimate image noise via Laplacian variance.
+
+        Higher variance means sharper (cleaner) image; lower means noisier.
 
         Args:
-            image: Input BGR image.
+            image: Input image (BGR or grayscale).
+
+        Returns:
+            Laplacian variance (float). Clean images typically > 500.
+        """
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    def apply_denoise(self, image: np.ndarray) -> np.ndarray:
+        """Apply noise-aware denoising.
+
+        Strategy (based on Laplacian variance):
+        - Clean image (var >= clean_threshold): skip entirely.
+        - Moderate noise (var >= moderate_threshold): fast bilateral filter.
+        - Heavy noise (var < moderate_threshold): full NLM denoising.
+
+        Args:
+            image: Input BGR or grayscale image.
+
+        Returns:
+            Denoised image (or original if clean).
+        """
+        noise_var = self.estimate_noise_level(image)
+
+        if noise_var >= self.noise_clean_threshold:
+            logger.debug("Noise level %.1f — clean image, skipping denoise", noise_var)
+            return image
+
+        if noise_var >= self.noise_moderate_threshold:
+            logger.debug("Noise level %.1f — moderate, using bilateral filter", noise_var)
+            return self._apply_bilateral(image)
+
+        logger.debug("Noise level %.1f — noisy, using NLM denoising", noise_var)
+        return self._apply_nlm(image)
+
+    def _apply_bilateral(self, image: np.ndarray) -> np.ndarray:
+        """Apply fast bilateral filter for moderate noise.
+
+        Args:
+            image: Input BGR or grayscale image.
+
+        Returns:
+            Filtered image.
+        """
+        return cv2.bilateralFilter(image, d=9, sigmaColor=75, sigmaSpace=75)
+
+    def _apply_nlm(self, image: np.ndarray) -> np.ndarray:
+        """Apply Non-Local Means denoising for heavy noise.
+
+        Args:
+            image: Input BGR or grayscale image.
 
         Returns:
             Denoised image.

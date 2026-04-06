@@ -73,12 +73,23 @@ class FigureRecognizer:
         # Final fallback: includegraphics
         return self._fallback_includegraphics(image, save_original_path)
 
+    # SSIM threshold below which a fast sample() result triggers MCTS escalation
+    MCTS_ESCALATION_THRESHOLD = 0.7
+
     def _try_detikzify(self, image: np.ndarray, use_mcts: bool = False) -> Optional[str]:
-        """Try to convert figure using DeTikZify.
+        """Try to convert figure using DeTikZify with progressive timeout.
+
+        Always starts with a fast ``sample()`` call (~5-10 s).  If *use_mcts*
+        is True **and** the sample quality is below
+        ``MCTS_ESCALATION_THRESHOLD`` (measured by rasterising the result and
+        comparing SSIM against the source), the method escalates to the
+        slower MCTS-based ``simulate()``.  This avoids a 5-minute MCTS run
+        for figures that ``sample()`` already handles well.
 
         Args:
             image: Figure image (BGR).
-            use_mcts: Whether to use MCTS inference.
+            use_mcts: Whether to *allow* MCTS escalation if sample quality
+                is insufficient.
 
         Returns:
             TikZ code or None.
@@ -95,21 +106,43 @@ class FigureRecognizer:
 
             pil_image = self._bgr_to_pil(image)
 
+            # --- Fast path: always try sample() first ---
+            code = self.detikzify.sample(image=pil_image)
+            if code:
+                logger.info("DeTikZify sample: code_len=%d", len(code))
+
+                if not use_mcts:
+                    return code
+
+                # --- Quality gate: decide whether MCTS is needed ---
+                try:
+                    rendered = self.detikzify.rasterize(code)
+                    if rendered is not None:
+                        from src.validation.visual_comparator import VisualComparator
+                        ssim = VisualComparator.compare_images(pil_image, rendered)
+                        logger.info("DeTikZify sample SSIM=%.3f (threshold=%.2f)",
+                                    ssim, self.MCTS_ESCALATION_THRESHOLD)
+                        if ssim >= self.MCTS_ESCALATION_THRESHOLD:
+                            return code
+                except Exception as e:
+                    logger.debug("SSIM quality gate failed, escalating to MCTS: %s", e)
+
+            # --- Slow path: MCTS refinement ---
             if use_mcts:
+                logger.info("Escalating to DeTikZify MCTS (timeout=%ds)", self.mcts_timeout)
                 results = self.detikzify.simulate(
                     image=pil_image,
                     timeout=self.mcts_timeout,
                     top_k=1,
                 )
                 if results:
-                    score, code = results[0]
-                    logger.info("DeTikZify MCTS: score=%.3f, code_len=%d", score, len(code))
-                    return code
-            else:
-                code = self.detikzify.sample(image=pil_image)
-                if code:
-                    logger.info("DeTikZify sample: code_len=%d", len(code))
-                    return code
+                    score, mcts_code = results[0]
+                    logger.info("DeTikZify MCTS: score=%.3f, code_len=%d", score, len(mcts_code))
+                    return mcts_code
+
+            # If sample produced code but we skipped MCTS, still return it
+            if code:
+                return code
 
         except Exception as e:
             logger.warning("DeTikZify recognition failed: %s", e)
@@ -118,6 +151,9 @@ class FigureRecognizer:
 
     def _try_vlm(self, image: np.ndarray) -> Optional[str]:
         """Try to convert figure using Ollama VLM.
+
+        Passes the numpy array directly to OllamaClient which encodes it
+        in-memory as PNG, avoiding disk I/O with temp files.
 
         Args:
             image: Figure image (BGR).
@@ -134,11 +170,6 @@ class FigureRecognizer:
             if self.scheduler:
                 self.scheduler.acquire(ModelType.OLLAMA_VLM)
 
-            # Save to temp file
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-                cv2.imwrite(tmp.name, image)
-                tmp_path = tmp.name
-
             prompt = (
                 "Convert this figure/diagram into TikZ code for LaTeX. "
                 "Output ONLY the complete TikZ code starting with \\begin{tikzpicture} "
@@ -149,11 +180,9 @@ class FigureRecognizer:
             result = self.ollama.generate(
                 model=self.ollama_vlm_model,
                 prompt=prompt,
-                images=[tmp_path],
+                images=[image],
                 temperature=0.1,
             )
-
-            Path(tmp_path).unlink(missing_ok=True)
 
             if result and "\\begin{tikzpicture}" in result:
                 code = self._extract_tikz(result)

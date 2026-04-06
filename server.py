@@ -3,7 +3,6 @@
 import asyncio
 import hashlib
 import logging
-import shutil
 import time
 import uuid
 import zipfile
@@ -17,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.config import load_config, setup_logging, PROJECT_ROOT
 from src.pipeline import Pipeline, PipelineStage, TaskStatus
+from src.task_store import TaskStore
 
 STATIC_DIR = PROJECT_ROOT / "static"
 
@@ -43,8 +43,10 @@ app.add_middleware(
 # Serve static files (CSS, JS)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Task storage
-tasks: Dict[str, Dict[str, Any]] = {}
+# Task storage (SQLite-backed, survives restarts, bounded memory)
+tasks = TaskStore(
+    db_path=Path(config.get("paths", {}).get("data_dir", "data")) / "tasks.db",
+)
 task_websockets: Dict[str, list] = {}
 
 # Pipeline instance (lazy init)
@@ -112,11 +114,24 @@ async def upload_file(background_tasks: BackgroundTasks, file: UploadFile = File
             detail=f"Unsupported file type: {suffix}. Supported: {', '.join(supported)}",
         )
 
-    # Check file size
+    # Check file size — reject early via Content-Length if available,
+    # then read in chunks to avoid loading huge files fully into RAM.
     max_size = config.get("server", {}).get("upload_max_size_mb", 100) * 1024 * 1024
-    content = await file.read()
-    if len(content) > max_size:
+    if file.size and file.size > max_size:
         raise HTTPException(status_code=413, detail="File too large")
+
+    chunks = []
+    total = 0
+    chunk_size = 1024 * 1024  # 1 MB
+    while True:
+        chunk = await file.read(chunk_size)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_size:
+            raise HTTPException(status_code=413, detail="File too large")
+        chunks.append(chunk)
+    content = b"".join(chunks)
 
     # Generate task ID
     task_id = hashlib.sha256(f"{file.filename}_{time.time()}_{uuid.uuid4()}".encode()).hexdigest()[:12]
@@ -229,10 +244,13 @@ async def download_task_zip(task_id: str):
         raise HTTPException(status_code=404, detail="Output not available")
 
     zip_path = output_dir / f"{task_id}_output.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file in output_dir.rglob("*"):
-            if file.is_file() and file != zip_path:
-                zf.write(file, file.relative_to(output_dir))
+
+    # Serve cached ZIP if it already exists (Phase 4c: result caching)
+    if not zip_path.exists():
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for file in output_dir.rglob("*"):
+                if file.is_file() and file != zip_path:
+                    zf.write(file, file.relative_to(output_dir))
 
     return FileResponse(
         path=str(zip_path),
@@ -268,9 +286,16 @@ async def recompile_task(task_id: str, latex: dict):
 
     success, log_output, pdf_path = pipeline.compiler.compile(tex_path, output_dir)
 
-    tasks[task_id]["output_tex"] = str(tex_path)
+    # Invalidate cached ZIP so next download reflects the recompiled output
+    cached_zip = output_dir / f"{task_id}_output.zip"
+    if cached_zip.exists():
+        cached_zip.unlink()
+
+    task_data = tasks[task_id]
+    task_data["output_tex"] = str(tex_path)
     if success and pdf_path:
-        tasks[task_id]["output_pdf"] = str(pdf_path)
+        task_data["output_pdf"] = str(pdf_path)
+    tasks[task_id] = task_data
 
     return {
         "task_id": task_id,
@@ -360,7 +385,8 @@ async def _run_conversion(task_id: str, file_path: Path) -> None:
 
     def progress_callback(status: TaskStatus):
         """Update task status and notify WebSocket clients."""
-        tasks[task_id].update({
+        task_data = tasks.get(task_id) or {}
+        task_data.update({
             "stage": status.stage.value,
             "progress": status.progress,
             "message": status.message,
@@ -368,6 +394,7 @@ async def _run_conversion(task_id: str, file_path: Path) -> None:
             "output_tex": str(status.output_tex) if status.output_tex else None,
             "output_pdf": str(status.output_pdf) if status.output_pdf else None,
         })
+        tasks.put(task_id, task_data)
         # Notify WebSocket clients
         loop.call_soon_threadsafe(loop.create_task, _notify_websockets(task_id))
 
@@ -380,14 +407,18 @@ async def _run_conversion(task_id: str, file_path: Path) -> None:
     )
 
     # Final status update
-    tasks[task_id].update({
+    task_data = tasks.get(task_id) or {}
+    task_data.update({
         "stage": result.stage.value,
         "progress": result.progress,
         "message": result.message,
         "error": result.error,
         "output_tex": str(result.output_tex) if result.output_tex else None,
         "output_pdf": str(result.output_pdf) if result.output_pdf else None,
+        "stage_times": result.stage_times,
+        "ssim_score": result.ssim_score,
     })
+    tasks.put(task_id, task_data)
     await _notify_websockets(task_id)
 
 
@@ -400,7 +431,7 @@ async def _notify_websockets(task_id: str) -> None:
     if task_id not in task_websockets:
         return
 
-    status = tasks.get(task_id, {})
+    status = tasks.get(task_id) or {}
     dead = []
 
     for ws in task_websockets[task_id]:
